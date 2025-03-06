@@ -18,6 +18,22 @@ export function activate(context: vscode.ExtensionContext) {
     webviewProvider
   );
 
+  // Function to update configuration state
+  async function updateConfigurationState() {
+    const isConfigured = await configManager.isConfigured();
+    await vscode.commands.executeCommand(
+      'setContext',
+      'coolify.isConfigured',
+      isConfigured
+    );
+
+    // Update the webview if it exists
+    webviewProvider.updateView();
+  }
+
+  // Initial configuration state
+  updateConfigurationState();
+
   // Register commands
   const configureCommand = vscode.commands.registerCommand(
     'coolify.configure',
@@ -86,7 +102,7 @@ export function activate(context: vscode.ExtensionContext) {
         // Save configuration
         await configManager.setServerUrl(normalizedUrl);
         await configManager.setToken(token);
-        await updateConfigurationState(configManager);
+        await updateConfigurationState();
 
         vscode.window.showInformationMessage(
           'Coolify for VSCode configured successfully!'
@@ -112,8 +128,17 @@ export function activate(context: vscode.ExtensionContext) {
 
       if (result === 'Yes') {
         await configManager.clearConfiguration();
-        await updateConfigurationState(configManager);
+        await updateConfigurationState();
         await vscode.commands.executeCommand('coolify.configure');
+      }
+    }
+  );
+
+  const refreshApplicationsCommand = vscode.commands.registerCommand(
+    'coolify.refreshApplications',
+    async () => {
+      if (webviewProvider) {
+        await webviewProvider.refreshData();
       }
     }
   );
@@ -123,18 +148,8 @@ export function activate(context: vscode.ExtensionContext) {
     webviewView,
     configureCommand,
     reconfigureCommand,
+    refreshApplicationsCommand,
     webviewProvider
-  );
-}
-
-async function updateConfigurationState(
-  configManager: ConfigurationManager
-): Promise<void> {
-  const isConfigured = await configManager.isConfigured();
-  await vscode.commands.executeCommand(
-    'setContext',
-    'coolify.isConfigured',
-    isConfigured
   );
 }
 

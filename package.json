@@ -33,13 +33,6 @@
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "coolify-deployments",
-        "contents": "Welcome to Coolify for VSCode!\n\nTo get started, configure your Coolify server settings.\n\n[Configure Settings](command:coolify.configure)\n\nLearn more about [how to configure](https://coolify.io/docs/api-reference/authorization)",
-        "when": "!coolify.isConfigured"
-      }
-    ],
     "commands": [
       {
         "command": "coolify.configure",
@@ -60,16 +53,7 @@
         "command": "coolify.deployApplication",
         "title": "Deploy Application"
       }
-    ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "coolify.refreshApplications",
-          "when": "view == coolify-deployments && coolify.isConfigured",
-          "group": "navigation"
-        }
-      ]
-    }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "pnpm run package",

@@ -5,17 +5,35 @@ import { CoolifyService } from '../services/CoolifyService';
 export class CoolifyWebViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private refreshInterval?: NodeJS.Timeout;
+  private messageHandler?: vscode.Disposable;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private configManager: ConfigurationManager
   ) {}
 
-  public resolveWebviewView(
+  public updateView() {
+    if (this._view) {
+      this._view.webview.html = '';
+      this.resolveWebviewView(
+        this._view,
+        { state: undefined },
+        new vscode.CancellationTokenSource().token
+      );
+    }
+  }
+
+  public async resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
   ) {
+    // Clean up any existing message handler
+    if (this.messageHandler) {
+      this.messageHandler.dispose();
+      this.messageHandler = undefined;
+    }
+
     this._view = webviewView;
 
     webviewView.webview.options = {
@@ -23,19 +41,37 @@ export class CoolifyWebViewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [this._extensionUri],
     };
 
-    webviewView.webview.html = this._getHtmlForWebview();
-
     // Handle messages from the webview
-    webviewView.webview.onDidReceiveMessage(async (data) => {
-      switch (data.type) {
-        case 'refresh':
-          await this.refreshData();
-          break;
-        case 'deploy':
-          await this.deployApplication(data.applicationId);
-          break;
+    this.messageHandler = webviewView.webview.onDidReceiveMessage(
+      async (data) => {
+        switch (data.type) {
+          case 'refresh':
+            await this.refreshData();
+            break;
+          case 'deploy':
+            await this.deployApplication(data.applicationId);
+            break;
+          case 'configure':
+            await vscode.commands.executeCommand('coolify.configure');
+            break;
+        }
       }
-    });
+    );
+
+    // Check if extension is configured before proceeding
+    const isConfigured = await this.configManager.isConfigured();
+    if (!isConfigured) {
+      // Clean up any existing refresh interval
+      if (this.refreshInterval) {
+        clearInterval(this.refreshInterval);
+        this.refreshInterval = undefined;
+      }
+      // Show welcome message in webview
+      webviewView.webview.html = this._getWelcomeHtml();
+      return;
+    }
+
+    webviewView.webview.html = this._getHtmlForWebview();
 
     // Start auto-refresh for deployments
     this.startDeploymentRefresh();
@@ -44,7 +80,7 @@ export class CoolifyWebViewProvider implements vscode.WebviewViewProvider {
     this.refreshData();
   }
 
-  private async refreshData() {
+  public async refreshData() {
     try {
       const serverUrl = await this.configManager.getServerUrl();
       const token = await this.configManager.getToken();
@@ -467,9 +503,107 @@ export class CoolifyWebViewProvider implements vscode.WebviewViewProvider {
         </html>`;
   }
 
+  private _getWelcomeHtml() {
+    const logoUri = this._view?.webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, 'public', 'logo.svg')
+    );
+
+    return `<!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {
+                font-family: var(--vscode-font-family);
+                color: var(--vscode-foreground);
+                margin: 0;
+                height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .content {
+                text-align: center;
+                max-width: 100%;
+            }
+            .logo {
+                width: 80px;
+                height: 80px;
+                margin-bottom: 16px;
+                transition: filter 0.2s ease;
+            }
+            .logo:hover {
+                filter: drop-shadow(0 4px 8px rgba(140, 82, 255, 0.3));
+            }
+            h2 {
+                font-size: 1.2em;
+                margin: 0 0 8px;
+                font-weight: 600;
+            }
+            .subtitle {
+                color: var(--vscode-descriptionForeground);
+                margin: 0 0 20px;
+                font-size: 0.9em;
+                line-height: 1.4;
+            }
+            .configure-button {
+                padding: 8px 16px;
+                background: var(--vscode-button-background);
+                color: var(--vscode-button-foreground);
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 13px;
+                margin-bottom: 16px;
+            }
+            .configure-button:hover {
+                background: var(--vscode-button-hoverBackground);
+            }
+            .docs-link {
+                color: var(--vscode-textLink-foreground);
+                text-decoration: none;
+                font-size: 0.9em;
+            }
+            .docs-link:hover {
+                text-decoration: underline;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="content">
+            <img src="${logoUri}" alt="Coolify Logo" class="logo" />
+            <h2>Coolify for VSCode</h2>
+            <p class="subtitle">
+                Configure your Coolify server to get started
+            </p>
+            <button class="configure-button" onclick="configure()">
+                Configure
+            </button>
+            <br>
+            <a href="https://coolify.io/docs/api-reference/authorization#generate" 
+               class="docs-link" 
+               target="_blank">
+                Learn how to generate API token →
+            </a>
+        </div>
+        <script>
+            const vscode = acquireVsCodeApi();
+            
+            function configure() {
+                vscode.postMessage({ type: 'configure' });
+            }
+        </script>
+    </body>
+    </html>`;
+  }
+
   public dispose() {
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
+    }
+    if (this.messageHandler) {
+      this.messageHandler.dispose();
     }
   }
 }

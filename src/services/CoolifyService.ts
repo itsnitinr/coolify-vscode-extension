@@ -79,7 +79,7 @@ export class CoolifyService {
    */
   async verifyToken(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/auth/verify`, {
+      const response = await fetch(`${this.baseUrl}/api/v1/version`, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${this.token}`,
@@ -99,7 +99,7 @@ export class CoolifyService {
    */
   async testConnection(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/v1/status`);
+      const response = await fetch(`${this.baseUrl}/api/health`);
       return response.ok;
     } catch (error) {
       console.error('Error testing connection:', error);
