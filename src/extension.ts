@@ -1,22 +1,22 @@
 import * as vscode from 'vscode';
 import { ConfigurationManager } from './managers/ConfigurationManager';
-import { CoolifyTreeProvider } from './providers/CoolifyTreeProvider';
+import { CoolifyWebViewProvider } from './providers/CoolifyWebViewProvider';
 import { isValidUrl, normalizeUrl } from './utils/urlValidator';
 import { CoolifyService } from './services/CoolifyService';
 
 export function activate(context: vscode.ExtensionContext) {
   // Initialize managers and providers
   const configManager = new ConfigurationManager(context);
-  const treeProvider = new CoolifyTreeProvider(configManager);
+  const webviewProvider = new CoolifyWebViewProvider(
+    context.extensionUri,
+    configManager
+  );
 
-  // Set initial configuration state
-  updateConfigurationState(configManager);
-
-  // Register the tree data provider
-  const treeView = vscode.window.createTreeView('coolify-deployments', {
-    treeDataProvider: treeProvider,
-    showCollapseAll: false,
-  });
+  // Register the webview provider
+  const webviewView = vscode.window.registerWebviewViewProvider(
+    'coolify-deployments',
+    webviewProvider
+  );
 
   // Register commands
   const configureCommand = vscode.commands.registerCommand(
@@ -88,9 +88,6 @@ export function activate(context: vscode.ExtensionContext) {
         await configManager.setToken(token);
         await updateConfigurationState(configManager);
 
-        // Refresh view
-        treeProvider.refresh();
-
         vscode.window.showInformationMessage(
           'Coolify for VSCode configured successfully!'
         );
@@ -116,14 +113,18 @@ export function activate(context: vscode.ExtensionContext) {
       if (result === 'Yes') {
         await configManager.clearConfiguration();
         await updateConfigurationState(configManager);
-        treeProvider.refresh();
         await vscode.commands.executeCommand('coolify.configure');
       }
     }
   );
 
   // Add to subscriptions
-  context.subscriptions.push(treeView, configureCommand, reconfigureCommand);
+  context.subscriptions.push(
+    webviewView,
+    configureCommand,
+    reconfigureCommand,
+    webviewProvider
+  );
 }
 
 async function updateConfigurationState(

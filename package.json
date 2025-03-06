@@ -9,7 +9,9 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:coolify-deployments"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -24,9 +26,9 @@
     "views": {
       "coolify-sidebar": [
         {
+          "type": "webview",
           "id": "coolify-deployments",
-          "name": "Coolify Deployments",
-          "type": "tree",
+          "name": "Coolify",
           "visibility": "visible"
         }
       ]
@@ -48,8 +50,26 @@
         "command": "coolify.reconfigure",
         "title": "Reconfigure Coolify for VSCode",
         "enablement": "coolify.isConfigured"
+      },
+      {
+        "command": "coolify.refreshApplications",
+        "title": "Refresh Applications",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "coolify.deployApplication",
+        "title": "Deploy Application"
       }
-    ]
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "coolify.refreshApplications",
+          "when": "view == coolify-deployments && coolify.isConfigured",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "pnpm run package",
