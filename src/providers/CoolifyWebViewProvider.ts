@@ -428,14 +428,14 @@ export class CoolifyWebViewProvider implements vscode.WebviewViewProvider {
 
   // HTML Generation
   private async getWebViewHtml(): Promise<string> {
-    const htmlPath = path.join(
-      this._extensionUri.fsPath,
-      'src/templates/webview.html'
+    const htmlPath = vscode.Uri.joinPath(
+      this._extensionUri,
+      'dist',
+      'templates',
+      'webview.html'
     );
-
-    let html = await fs.promises.readFile(htmlPath, 'utf-8');
-
-    return html;
+    const fileData = await vscode.workspace.fs.readFile(htmlPath);
+    return Buffer.from(fileData).toString('utf-8');
   }
 
   private async getWelcomeHtml(): Promise<string> {
