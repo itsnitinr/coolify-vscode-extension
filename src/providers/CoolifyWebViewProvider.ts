@@ -444,11 +444,14 @@ export class CoolifyWebViewProvider implements vscode.WebviewViewProvider {
     );
 
     // Load welcome template and replace logo URI
-    const welcomePath = path.join(
-      this._extensionUri.fsPath,
-      'src/templates/welcome.html'
+    const welcomePath = vscode.Uri.joinPath(
+      this._extensionUri,
+      'dist',
+      'templates',
+      'welcome.html'
     );
-    let html = await fs.promises.readFile(welcomePath, 'utf-8');
+    const fileData = await vscode.workspace.fs.readFile(welcomePath);
+    let html = Buffer.from(fileData).toString('utf-8');
     html = html.replace('${logoUri}', logoUri?.toString() || '');
 
     return html;
