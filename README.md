@@ -1,71 +1,55 @@
-# vscode-coolify README
+# Coolify Deployments VSCode Extension
 
-This is the README for your extension "vscode-coolify". After writing up a brief description, we recommend including the following sections.
+An extension that allows you to manage and trigger your Coolify application deployments directly from Visual Studio Code.
+
+> **Note**: This is a community extension and is not officially associated with Coolify.
 
 ## Features
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- View all your Coolify applications in VS Code
+- Track deployment status of your applications
+- Trigger new deployments directly from VS Code
+- Monitor active deployments in real-time
 
-For example if there is an image subfolder under your extension project workspace:
+## Prerequisites
 
-\!\[feature X\]\(images/feature-x.png\)
+Before using this extension, ensure you have:
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+1. A server with Coolify configured and running
+2. Access to your Coolify dashboard
+3. An API token from your Coolify dashboard
 
-## Requirements
+## Setup and Configuration
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+1. Install the extension from the VS Code marketplace
+2. Configure the extension with:
+   - Your Coolify server IP address
+   - Your Coolify API token
 
-## Extension Settings
+You can configure these settings by:
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+- Using the command palette (Ctrl/Cmd + Shift + P) and searching for "Coolify: Configure"
+- Or by clicking on Coolify Deployments on the activity bar and clicking on the configure button
 
-For example:
+## Usage
 
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
+1. After configuration, your Coolify applications will appear in the sidebar
+2. Use the deploy button to trigger a new deployment
+3. Monitor the deployment progress in real-time
 
 ## Release Notes
 
-Users appreciate release notes as you update your extension.
-
 ### 1.0.0
 
-Initial release of ...
+Initial release of VSCode Coolify Extension with the following features:
 
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
+- View Coolify applications
+- Track deployment status
+- Trigger new deployments
+- Configure and reconfigure extension settings
+- Real-time deployment tracking
 
 ## For more information
 
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+- [Coolify Documentation](https://coolify.io/docs)
+- [Visual Studio Code's Extension API](http://code.visualstudio.com/api)
