@@ -3,6 +3,17 @@
   "displayName": "Coolify Deployments",
   "description": "Track and deploy your Coolify applications right from Visual Studio Code",
   "version": "0.0.1",
+  "author": {
+    "name": "Nitin Ranganath",
+    "email": "nitinranganath@gmail.com",
+    "url": "https://nitinranganath.com"
+  },
+  "publisher": "NitinRanganath",
+  "icon": "public/logo.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/itsnitinr/coolify-vscode-extension"
+  },
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -82,7 +93,7 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.98.0",
+    "@types/vscode": "^1.74.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
     "@typescript-eslint/eslint-plugin": "^8.25.0",
