@@ -1,7 +1,7 @@
 {
   "name": "vscode-coolify",
-  "displayName": "Coolify for VSCode",
-  "description": "Create and track your Coolify deployments right from Visual Studio Code",
+  "displayName": "Coolify Deployments",
+  "description": "Track and deploy your Coolify applications right from Visual Studio Code",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.74.0"
@@ -18,7 +18,7 @@
       "activitybar": [
         {
           "id": "coolify-sidebar",
-          "title": "Coolify for VSCode",
+          "title": "Coolify Deployments",
           "icon": "public/logo.svg"
         }
       ]
@@ -33,25 +33,37 @@
         }
       ]
     },
+    "menus": {
+      "view/title": [
+        {
+          "command": "coolify.reconfigure",
+          "when": "view == coolify-deployments && coolify.isConfigured",
+          "group": "navigation"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "coolify.configure",
-        "title": "Configure Coolify for VSCode",
+        "title": "Coolify: Configure",
         "enablement": "!coolify.isConfigured"
       },
       {
         "command": "coolify.reconfigure",
-        "title": "Reconfigure Coolify for VSCode",
-        "enablement": "coolify.isConfigured"
-      },
-      {
-        "command": "coolify.refreshApplications",
-        "title": "Refresh Applications",
+        "title": "Coolify: Reconfigure",
+        "enablement": "coolify.isConfigured",
         "icon": "$(refresh)"
       },
       {
-        "command": "coolify.deployApplication",
-        "title": "Deploy Application"
+        "command": "coolify.refreshApplications",
+        "title": "Coolify: Refresh Applications",
+        "icon": "$(refresh)",
+        "enablement": "coolify.isConfigured"
+      },
+      {
+        "command": "coolify.startDeployment",
+        "title": "Coolify: Start Deployment",
+        "enablement": "coolify.isConfigured"
       }
     ]
   },

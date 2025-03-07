@@ -1,136 +1,499 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ConfigurationManager } from '../managers/ConfigurationManager';
 import { CoolifyService } from '../services/CoolifyService';
+
+// Types and Interfaces
+interface RetryConfig {
+  maxAttempts: number;
+  baseDelay: number;
+  maxDelay: number;
+}
+
+interface WebViewState {
+  applications: Application[];
+  deployments: Deployment[];
+}
+
+interface Application {
+  id: string;
+  name: string;
+  status: string;
+  fqdn: string;
+  git_repository: string;
+  git_branch: string;
+  updated_at: string;
+}
+
+interface Deployment {
+  id: string;
+  applicationId: string;
+  applicationName: string;
+  status: string;
+  commit: string;
+  startedAt: string;
+}
+
+interface WebViewMessage {
+  type: 'refresh' | 'deploy' | 'configure' | 'reconfigure';
+  applicationId?: string;
+}
+
+interface RefreshDataMessage {
+  type: 'refresh-data';
+  applications: Application[];
+  deployments: Deployment[];
+}
+
+interface DeploymentStatusMessage {
+  type: 'deployment-status';
+  status: string;
+  applicationId: string;
+}
+
+type WebViewOutgoingMessage = RefreshDataMessage | DeploymentStatusMessage;
+
+// Constants
+const DEFAULT_RETRY_CONFIG: RetryConfig = {
+  maxAttempts: 3,
+  baseDelay: 1000,
+  maxDelay: 10000,
+};
+
+const REFRESH_INTERVAL = 5000;
 
 export class CoolifyWebViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private refreshInterval?: NodeJS.Timeout;
   private messageHandler?: vscode.Disposable;
+  private retryCount = 0;
+  private isDisposed = false;
+  private deployingApplications = new Set<string>();
+  private pendingRefresh?: NodeJS.Timeout;
+  private disposables: vscode.Disposable[] = [];
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private configManager: ConfigurationManager
-  ) {}
+  ) {
+    this.initializeConfigurationListener();
+  }
 
-  public updateView() {
-    if (this._view) {
-      this._view.webview.html = '';
-      this.resolveWebviewView(
-        this._view,
-        { state: undefined },
-        new vscode.CancellationTokenSource().token
-      );
+  // Initialization Methods
+  private initializeConfigurationListener(): void {
+    this.disposables.push(
+      vscode.workspace.onDidChangeConfiguration(async (e) => {
+        if (e.affectsConfiguration('coolify')) {
+          await this.handleConfigurationChange();
+        }
+      })
+    );
+  }
+
+  private async handleConfigurationChange(): Promise<void> {
+    const isConfigured = await this.configManager.isConfigured();
+    if (!isConfigured) {
+      this.stopRefreshInterval();
+    }
+    await this.updateView();
+  }
+
+  // View Management Methods
+  private isViewValid(): boolean {
+    return !!this._view && !this.isDisposed;
+  }
+
+  public async updateView(): Promise<void> {
+    if (this.pendingRefresh) {
+      clearTimeout(this.pendingRefresh);
+    }
+
+    this.pendingRefresh = setTimeout(async () => {
+      if (!this.isViewValid()) {
+        return;
+      }
+
+      try {
+        this._view!.webview.html = '';
+        await this.resolveWebviewView(
+          this._view!,
+          { state: undefined },
+          new vscode.CancellationTokenSource().token
+        );
+      } catch (error) {
+        this.handleError('Failed to update view', error);
+      }
+    }, 100);
+  }
+
+  // Retry Logic
+  private async withRetry<T>(
+    operation: () => Promise<T>,
+    retryConfig: RetryConfig = DEFAULT_RETRY_CONFIG
+  ): Promise<T> {
+    let lastError: Error | undefined;
+
+    for (let attempt = 1; attempt <= retryConfig.maxAttempts; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        if (attempt === retryConfig.maxAttempts) {
+          throw lastError;
+        }
+
+        const delay = Math.min(
+          retryConfig.baseDelay * Math.pow(2, attempt - 1),
+          retryConfig.maxDelay
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    throw lastError;
+  }
+
+  // Refresh Management
+  private stopRefreshInterval(): void {
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+      this.refreshInterval = undefined;
     }
   }
 
+  private startRefreshInterval(): void {
+    this.stopRefreshInterval();
+    this.retryCount = 0;
+
+    this.refreshInterval = setInterval(async () => {
+      try {
+        await this.refreshData();
+        this.retryCount = 0;
+      } catch (error) {
+        this.retryCount++;
+        console.error('Refresh failed:', error);
+
+        if (this.retryCount >= DEFAULT_RETRY_CONFIG.maxAttempts) {
+          this.stopRefreshInterval();
+          if (this.isViewValid()) {
+            vscode.window.showErrorMessage(
+              'Auto-refresh stopped due to repeated errors. Click refresh to try again.'
+            );
+          }
+        }
+      }
+    }, REFRESH_INTERVAL);
+  }
+
+  // Data Management
+  public async refreshData(): Promise<void> {
+    if (!this.isViewValid()) {
+      return;
+    }
+
+    try {
+      await this.withRetry(async () => {
+        const serverUrl = await this.configManager.getServerUrl();
+        const token = await this.configManager.getToken();
+
+        if (!serverUrl || !token) {
+          await this.handleUnconfiguredState();
+          return;
+        }
+
+        const service = new CoolifyService(serverUrl, token);
+        const [applications, deployments] = await Promise.all([
+          service.getApplications(),
+          service.getDeployments(),
+        ]);
+
+        await this.updateWebViewState(applications, deployments);
+      });
+    } catch (error) {
+      await this.handleRefreshError(error);
+    }
+  }
+
+  private async handleUnconfiguredState(): Promise<void> {
+    await vscode.commands.executeCommand(
+      'setContext',
+      'coolify.isConfigured',
+      false
+    );
+  }
+
+  private async updateWebViewState(
+    applications: any[],
+    deployments: any[]
+  ): Promise<void> {
+    if (!this.isViewValid()) {
+      return;
+    }
+
+    const uiApplications = this.mapApplicationsToUI(applications);
+    const uiDeployments = this.mapDeploymentsToUI(deployments);
+
+    this._view!.webview.postMessage({
+      type: 'refresh-data',
+      applications: uiApplications,
+      deployments: uiDeployments,
+    } as WebViewOutgoingMessage);
+  }
+
+  private mapApplicationsToUI(applications: any[]): Application[] {
+    return applications.map((app) => ({
+      id: app.uuid,
+      name: app.name,
+      status: app.status,
+      fqdn: app.fqdn,
+      git_repository: app.git_repository,
+      git_branch: app.git_branch,
+      updated_at: app.updated_at,
+    }));
+  }
+
+  private mapDeploymentsToUI(deployments: any[]): Deployment[] {
+    return deployments.map((d) => ({
+      id: d.id,
+      applicationId: d.application_id,
+      applicationName: d.application_name,
+      status: d.status,
+      commit:
+        d.commit_message ||
+        `Deploying ${d.commit?.slice(0, 7) || 'latest'} commit`,
+      startedAt: new Date(d.created_at).toLocaleString(),
+    }));
+  }
+
+  // Deployment Management
+  public async deployApplication(applicationId: string): Promise<void> {
+    if (this.deployingApplications.has(applicationId)) {
+      vscode.window.showInformationMessage('Deployment already in progress');
+      return;
+    }
+
+    this.deployingApplications.add(applicationId);
+
+    try {
+      await this.withRetry(async () => {
+        const serverUrl = await this.configManager.getServerUrl();
+        const token = await this.configManager.getToken();
+
+        if (!serverUrl || !token) {
+          throw new Error('Extension not configured properly');
+        }
+
+        const service = new CoolifyService(serverUrl, token);
+        await service.startDeployment(applicationId);
+      });
+
+      await this.refreshData();
+
+      if (this.isViewValid()) {
+        vscode.window.showInformationMessage('Deployment started successfully');
+      }
+    } catch (error) {
+      this.handleError('Failed to start deployment', error);
+    } finally {
+      this.deployingApplications.delete(applicationId);
+    }
+  }
+
+  // WebView Resolution
   public async resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
-  ) {
-    // Clean up any existing message handler
+  ): Promise<void> {
+    this.cleanupExistingView();
+    this.initializeNewView(webviewView);
+
+    try {
+      await this.setupWebView(webviewView);
+    } catch (error) {
+      this.handleError('Error initializing webview', error);
+    }
+  }
+
+  private cleanupExistingView(): void {
     if (this.messageHandler) {
       this.messageHandler.dispose();
       this.messageHandler = undefined;
     }
+  }
 
+  private initializeNewView(webviewView: vscode.WebviewView): void {
+    this.isDisposed = false;
     this._view = webviewView;
 
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [this._extensionUri],
+      enableCommandUris: false,
     };
+  }
 
-    // Handle messages from the webview
-    this.messageHandler = webviewView.webview.onDidReceiveMessage(
-      async (data) => {
-        switch (data.type) {
-          case 'refresh':
-            await this.refreshData();
-            break;
-          case 'deploy':
-            await this.deployApplication(data.applicationId);
-            break;
-          case 'configure':
-            await vscode.commands.executeCommand('coolify.configure');
-            break;
-        }
-      }
-    );
+  private async setupWebView(webviewView: vscode.WebviewView): Promise<void> {
+    this.setupMessageHandler(webviewView);
+    this.setupVisibilityHandler(webviewView);
+    this.setupDisposalHandler(webviewView);
 
-    // Check if extension is configured before proceeding
     const isConfigured = await this.configManager.isConfigured();
     if (!isConfigured) {
-      // Clean up any existing refresh interval
-      if (this.refreshInterval) {
-        clearInterval(this.refreshInterval);
-        this.refreshInterval = undefined;
-      }
-      // Show welcome message in webview
-      webviewView.webview.html = this._getWelcomeHtml();
+      this.handleUnconfiguredWebView(webviewView);
       return;
     }
 
-    webviewView.webview.html = this._getHtmlForWebview();
-
-    // Start auto-refresh for deployments
-    this.startDeploymentRefresh();
-
-    // Initial data load
-    this.refreshData();
+    await this.initializeConfiguredWebView(webviewView);
   }
 
-  public async refreshData() {
-    try {
-      const serverUrl = await this.configManager.getServerUrl();
-      const token = await this.configManager.getToken();
+  private setupMessageHandler(webviewView: vscode.WebviewView): void {
+    this.messageHandler = webviewView.webview.onDidReceiveMessage(
+      async (data: WebViewMessage) => {
+        if (!this.isViewValid()) {
+          return;
+        }
 
-      if (!serverUrl || !token) {
-        return;
+        try {
+          await this.handleWebViewMessage(data);
+        } catch (error) {
+          console.error('Error handling webview message:', error);
+        }
       }
+    );
+  }
 
-      const service = new CoolifyService(serverUrl, token);
-      const [applications, deployments] = await Promise.all([
-        service.getApplications(),
-        service.getDeployments(),
-      ]);
-
-      // Filter and transform data for UI
-      const uiApplications = applications.map((app) => ({
-        id: app.uuid,
-        name: app.name,
-        status: app.status,
-        fqdn: app.fqdn,
-        git_repository: app.git_repository,
-        git_branch: app.git_branch,
-        updated_at: app.updated_at,
-      }));
-
-      const uiDeployments = deployments.map((d) => ({
-        id: d.id,
-        applicationId: d.application_id,
-        applicationName: d.application_name,
-        status: d.status,
-        commit:
-          d.commit_message ||
-          `Deploying ${d.commit?.slice(0, 7) || 'latest'} commit`,
-        startedAt: new Date(d.created_at).toLocaleString(),
-      }));
-
-      // Send data to webview
-      if (this._view) {
-        this._view.webview.postMessage({
-          type: 'refresh-data',
-          applications: uiApplications,
-          deployments: uiDeployments,
-        });
-      }
-    } catch (error) {
-      console.error('Failed to refresh data:', error);
+  private async handleWebViewMessage(message: WebViewMessage): Promise<void> {
+    switch (message.type) {
+      case 'refresh':
+        await this.refreshData();
+        break;
+      case 'deploy':
+        if (message.applicationId) {
+          await this.deployApplication(message.applicationId);
+        }
+        break;
+      case 'configure':
+        await vscode.commands.executeCommand('coolify.configure');
+        break;
+      case 'reconfigure':
+        await vscode.commands.executeCommand('coolify.reconfigure');
     }
   }
 
-  private async deployApplication(applicationId: string) {
+  private setupVisibilityHandler(webviewView: vscode.WebviewView): void {
+    this.disposables.push(
+      webviewView.onDidChangeVisibility(() => {
+        if (webviewView.visible) {
+          this.refreshData().catch(console.error);
+          this.startRefreshInterval();
+        } else {
+          this.stopRefreshInterval();
+        }
+      })
+    );
+  }
+
+  private setupDisposalHandler(webviewView: vscode.WebviewView): void {
+    this.disposables.push(
+      webviewView.onDidDispose(() => {
+        this.dispose();
+      })
+    );
+  }
+
+  private async handleUnconfiguredWebView(
+    webviewView: vscode.WebviewView
+  ): Promise<void> {
+    this.stopRefreshInterval();
+    if (this.isViewValid()) {
+      webviewView.webview.html = await this.getWelcomeHtml();
+    }
+  }
+
+  private async initializeConfiguredWebView(
+    webviewView: vscode.WebviewView
+  ): Promise<void> {
+    if (this.isViewValid()) {
+      webviewView.webview.html = await this.getWebViewHtml();
+      if (webviewView.visible) {
+        this.startRefreshInterval();
+      }
+      await this.refreshData();
+    }
+  }
+
+  // HTML Generation
+  private async getWebViewHtml(): Promise<string> {
+    const htmlPath = path.join(
+      this._extensionUri.fsPath,
+      'src/templates/webview.html'
+    );
+
+    let html = await fs.promises.readFile(htmlPath, 'utf-8');
+
+    return html;
+  }
+
+  private async getWelcomeHtml(): Promise<string> {
+    const logoUri = this._view?.webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, 'public', 'logo.svg')
+    );
+
+    // Load welcome template and replace logo URI
+    const welcomePath = path.join(
+      this._extensionUri.fsPath,
+      'src/templates/welcome.html'
+    );
+    let html = await fs.promises.readFile(welcomePath, 'utf-8');
+    html = html.replace('${logoUri}', logoUri?.toString() || '');
+
+    return html;
+  }
+
+  // Error Handling
+  private handleError(message: string, error: unknown): void {
+    console.error(`${message}:`, error);
+    if (this.isViewValid()) {
+      if (error instanceof Error && error.message.includes('401')) {
+        this.handleAuthenticationError();
+      } else {
+        vscode.window.showErrorMessage(`${message}. Please try again.`);
+      }
+    }
+  }
+
+  private async handleAuthenticationError(): Promise<void> {
+    await this.configManager.clearConfiguration();
+    await vscode.commands.executeCommand(
+      'setContext',
+      'coolify.isConfigured',
+      false
+    );
+    if (this.isViewValid()) {
+      vscode.window.showErrorMessage(
+        'Authentication failed. Please reconfigure the extension.'
+      );
+    }
+  }
+
+  private async handleRefreshError(error: unknown): Promise<void> {
+    if (error instanceof Error && error.message.includes('401')) {
+      await this.handleAuthenticationError();
+    } else {
+      if (this.isViewValid()) {
+        vscode.window.showErrorMessage(
+          'Failed to refresh data. Please try again.'
+        );
+      }
+    }
+    throw error;
+  }
+
+  public async getApplications() {
     try {
       const serverUrl = await this.configManager.getServerUrl();
       const token = await this.configManager.getToken();
@@ -140,470 +503,39 @@ export class CoolifyWebViewProvider implements vscode.WebviewViewProvider {
       }
 
       const service = new CoolifyService(serverUrl, token);
-      await service.startDeployment(applicationId);
+      const applications = await service.getApplications();
 
-      // Refresh data to show new deployment
-      await this.refreshData();
-
-      vscode.window.showInformationMessage('Deployment started successfully');
+      return applications.map((app) => ({
+        id: app.uuid,
+        name: app.name,
+        status: app.status,
+        label: `${app.name} (${app.git_repository}:${app.git_branch})`,
+      }));
     } catch (error) {
-      vscode.window.showErrorMessage(
-        error instanceof Error ? error.message : 'Failed to start deployment'
-      );
+      console.error('Failed to get applications:', error);
+      throw error;
     }
   }
 
-  private startDeploymentRefresh() {
-    if (!this.refreshInterval) {
-      this.refreshInterval = setInterval(() => {
-        this.refreshData();
-      }, 5000);
+  // Cleanup
+  public dispose(): void {
+    this.isDisposed = true;
+    this.stopRefreshInterval();
+
+    if (this.pendingRefresh) {
+      clearTimeout(this.pendingRefresh);
+      this.pendingRefresh = undefined;
     }
-  }
 
-  private _getHtmlForWebview() {
-    return `<!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body {
-                    font-family: var(--vscode-font-family);
-                    color: var(--vscode-foreground);
-                    padding: 12px;
-                    display: flex;
-                    flex-direction: column;
-                    gap: 24px;
-                }
-                .section {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 16px;
-                }
-                .section-header {
-                    position: relative;
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    border-bottom: 1px solid var(--vscode-widget-border);
-                    flex-wrap: wrap;
-                    gap: 12px;
-                }
-                .section-header h3 {
-                    margin: 0;
-                    font-size: 14px;
-                    font-weight: 600;
-                    color: var(--vscode-foreground);
-                }
-                .refresh-button {
-                    padding: 4px 8px;
-                    background: transparent;
-                    color: var(--vscode-button-foreground);
-                    border: 1px solid var(--vscode-button-background);
-                    border-radius: 4px;
-                    cursor: pointer;
-                    font-size: 12px;
-                }
-                .refresh-button:hover {
-                    background: var(--vscode-button-background);
-                }
-                .cards-container {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 12px;
-                }
-                .card {
-                    background: var(--vscode-editor-background);
-                    border: 1px solid var(--vscode-widget-border);
-                    border-radius: 8px;
-                    padding: 12px;
-                    min-width: 0;
-                    display: flex;
-                    flex-direction: column;
-                    gap: 12px;
-                }
-                .card-main {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 8px;
-                }
-                .card-title {
-                    font-weight: 600;
-                    font-size: 14px;
-                    color: var(--vscode-editor-foreground);
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-                .card-subtitle {
-                    font-size: 12px;
-                    color: var(--vscode-descriptionForeground);
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-                .card-content {
-                    display: grid;
-                    grid-template-columns: minmax(80px, auto) 1fr;
-                    gap: 6px 12px;
-                    font-size: 12px;
-                }
-                .card-footer {
-                    display: flex;
-                    flex-wrap: wrap;
-                    gap: 8px;
-                    justify-content: space-between;
-                    align-items: center;
-                    padding-top: 8px;
-                    border-top: 1px solid var(--vscode-widget-border);
-                }
-                .label {
-                    color: var(--vscode-descriptionForeground);
-                    white-space: nowrap;
-                }
-                .value {
-                    color: var(--vscode-foreground);
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    min-width: 0;
-                }
-                .status {
-                    padding: 2px 8px;
-                    border-radius: 12px;
-                    font-size: 12px;
-                    background: var(--vscode-badge-background);
-                    color: var(--vscode-badge-foreground);
-                    white-space: nowrap;
-                    max-width: 100%;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-                .deployment-status {
-                    animation: pulse 2s infinite;
-                    background: var(--vscode-statusBarItem-warningBackground);
-                    color: var(--vscode-statusBarItem-warningForeground);
-                }
-                .deployment-card {
-                    position: relative;
-                    border-left: 4px solid var(--vscode-statusBarItem-warningBackground);
-                }
-                .deployment-time {
-                    font-size: 12px;
-                    color: var(--vscode-descriptionForeground);
-                }
-                .commit-message {
-                    font-size: 12px;
-                    color: var(--vscode-foreground);
-                    line-height: 1.4;
-                    display: -webkit-box;
-                    -webkit-line-clamp: 2;
-                    -webkit-box-orient: vertical;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-                .deploy-button {
-                    padding: 4px 12px;
-                    background: var(--vscode-button-background);
-                    color: var(--vscode-button-foreground);
-                    border: none;
-                    border-radius: 4px;
-                    cursor: pointer;
-                    font-size: 12px;
-                    white-space: nowrap;
-                }
-                .deploy-button:hover {
-                    background: var(--vscode-button-hoverBackground);
-                }
-                .loading {
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    gap: 8px;
-                    padding: 20px;
-                    color: var(--vscode-descriptionForeground);
-                }
-                .loading-spinner {
-                    width: 16px;
-                    height: 16px;
-                    border: 2px solid var(--vscode-widget-border);
-                    border-top-color: var(--vscode-button-background);
-                    border-radius: 50%;
-                    animation: spin 1s linear infinite;
-                }
-                .refresh-button {
-                    position: relative;
-                    display: inline-flex;
-                    align-items: center;
-                    gap: 4px;
-                }
-                .refresh-button.refreshing {
-                    opacity: 0.7;
-                    cursor: not-allowed;
-                }
-                .empty {
-                    text-align: center;
-                    padding: 20px;
-                    color: var(--vscode-descriptionForeground);
-                    font-style: italic;
-                }
-                @keyframes spin {
-                    to { transform: rotate(360deg); }
-                }
-                @keyframes pulse {
-                    0% { opacity: 1; }
-                    50% { opacity: 0.5; }
-                    100% { opacity: 1; }
-                }
-                @keyframes progress {
-                    0% { width: 0; }
-                    100% { width: 100%; }
-                }
-            </style>
-        </head>
-        <body>
-            <div class="section">
-                <div class="section-header">
-                    <h3>Applications</h3>
-                    <button class="refresh-button" id="refresh-button" onclick="refreshData()">
-                        <span>↻ Force Refresh</span>
-                    </button>
-                </div>
-                <div id="applications" class="cards-container">
-                    <div class="loading">
-                        <div class="loading-spinner"></div>
-                        Loading applications...
-                    </div>
-                </div>
-            </div>
-            
-            <div class="section">
-                <div class="section-header">
-                    <h3>Active Deployments</h3>
-                </div>
-                <div id="deployments" class="cards-container">
-                    <div class="loading">
-                        <div class="loading-spinner"></div>
-                        Loading deployments...
-                    </div>
-                </div>
-            </div>
-
-            <script>
-                const vscode = acquireVsCodeApi();
-                let isRefreshing = false;
-
-                // Restore previous state
-                const previousState = vscode.getState();
-                if (previousState) {
-                    updateUI(previousState.applications, previousState.deployments);
-                }
-
-                function refreshData() {
-                    if (isRefreshing) return;
-                    
-                    isRefreshing = true;
-                    const indicator = document.getElementById('refresh-indicator');
-                    const button = document.getElementById('refresh-button');
-                    
-                    indicator.style.display = 'block';
-                    button.classList.add('refreshing');
-                    button.disabled = true;
-                    
-                    vscode.postMessage({ type: 'refresh' });
-                }
-
-                function deployApplication(applicationId) {
-                    vscode.postMessage({ type: 'deploy', applicationId });
-                }
-
-                function formatDate(dateString) {
-                    return new Date(dateString).toLocaleString();
-                }
-
-                window.addEventListener('message', event => {
-                    const message = event.data;
-                    switch (message.type) {
-                        case 'refresh-data':
-                            vscode.setState({ 
-                                applications: message.applications, 
-                                deployments: message.deployments 
-                            });
-                            updateUI(message.applications, message.deployments);
-                            isRefreshing = false;
-                            const indicator = document.getElementById('refresh-indicator');
-                            const button = document.getElementById('refresh-button');
-                            indicator.style.display = 'none';
-                            button.classList.remove('refreshing');
-                            button.disabled = false;
-                            break;
-                        case 'deployment-status':
-                            if (message.status === 'failed') {
-                                deployingApps.delete(message.applicationId);
-                                updateDeployButton(message.applicationId, false);
-                            }
-                            break;
-                    }
-                });
-
-                function updateUI(applications, deployments) {
-                    if (!applications || !deployments) return;
-
-                    // Update Applications
-                    const appsContainer = document.getElementById('applications');
-                    if (applications.length === 0) {
-                        appsContainer.innerHTML = '<div class="empty">No applications found</div>';
-                    } else {
-                        appsContainer.innerHTML = applications.map(app => \`
-                            <div class="card">
-                                <div class="card-main">
-                                    <div class="card-title">\${app.name}</div>
-                                    <div class="card-subtitle">\${app.fqdn || 'No URL configured'}</div>
-                                    <div class="card-content">
-                                        <span class="label">Repository:</span>
-                                        <span class="value">\${app.git_repository || 'N/A'}</span>
-                                        <span class="label">Branch:</span>
-                                        <span class="value">\${app.git_branch || 'N/A'}</span>
-                                        <span class="label">Last Updated:</span>
-                                        <span class="value">\${formatDate(app.updated_at)}</span>
-                                    </div>
-                                </div>
-                                <div class="card-footer">
-                                    <span class="status">\${app.status}</span>
-                                    <button class="deploy-button" onclick="deployApplication('\${app.id}')">
-                                        Deploy
-                                    </button>
-                                </div>
-                            </div>
-                        \`).join('');
-                    }
-
-                    // Update Deployments
-                    const deploymentsContainer = document.getElementById('deployments');
-                    if (deployments.length === 0) {
-                        deploymentsContainer.innerHTML = '<div class="empty">No active deployments</div>';
-                    } else {
-                        deploymentsContainer.innerHTML = deployments.map(deployment => \`
-                            <div class="card deployment-card">
-                                <div class="card-main">
-                                    <div class="card-title">\${deployment.applicationName}</div>
-                                    <div class="deployment-time">Started \${deployment.startedAt}</div>
-                                    <div class="commit-message">\${deployment.commit}</div>
-                                </div>
-                                <div class="card-footer">
-                                    <span class="status deployment-status">\${deployment.status}</span>
-                                </div>
-                            </div>
-                        \`).join('');
-                    }
-                }
-            </script>
-        </body>
-        </html>`;
-  }
-
-  private _getWelcomeHtml() {
-    const logoUri = this._view?.webview.asWebviewUri(
-      vscode.Uri.joinPath(this._extensionUri, 'public', 'logo.svg')
-    );
-
-    return `<!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-            body {
-                font-family: var(--vscode-font-family);
-                color: var(--vscode-foreground);
-                margin: 0;
-                height: 100vh;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-            .content {
-                text-align: center;
-                max-width: 100%;
-            }
-            .logo {
-                width: 80px;
-                height: 80px;
-                margin-bottom: 16px;
-                transition: filter 0.2s ease;
-            }
-            .logo:hover {
-                filter: drop-shadow(0 4px 8px rgba(140, 82, 255, 0.3));
-            }
-            h2 {
-                font-size: 1.2em;
-                margin: 0 0 8px;
-                font-weight: 600;
-            }
-            .subtitle {
-                color: var(--vscode-descriptionForeground);
-                margin: 0 0 20px;
-                font-size: 0.9em;
-                line-height: 1.4;
-            }
-            .configure-button {
-                padding: 8px 16px;
-                background: var(--vscode-button-background);
-                color: var(--vscode-button-foreground);
-                border: none;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 13px;
-                margin-bottom: 16px;
-            }
-            .configure-button:hover {
-                background: var(--vscode-button-hoverBackground);
-            }
-            .docs-link {
-                color: var(--vscode-textLink-foreground);
-                text-decoration: none;
-                font-size: 0.9em;
-            }
-            .docs-link:hover {
-                text-decoration: underline;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="content">
-            <img src="${logoUri}" alt="Coolify Logo" class="logo" />
-            <h2>Coolify for VSCode</h2>
-            <p class="subtitle">
-                Configure your Coolify server to get started
-            </p>
-            <button class="configure-button" onclick="configure()">
-                Configure
-            </button>
-            <br>
-            <a href="https://coolify.io/docs/api-reference/authorization#generate" 
-               class="docs-link" 
-               target="_blank">
-                Learn how to generate API token →
-            </a>
-        </div>
-        <script>
-            const vscode = acquireVsCodeApi();
-            
-            function configure() {
-                vscode.postMessage({ type: 'configure' });
-            }
-        </script>
-    </body>
-    </html>`;
-  }
-
-  public dispose() {
-    if (this.refreshInterval) {
-      clearInterval(this.refreshInterval);
-    }
     if (this.messageHandler) {
       this.messageHandler.dispose();
+      this.messageHandler = undefined;
     }
+
+    this.disposables.forEach((d) => d.dispose());
+    this.disposables = [];
+
+    this._view = undefined;
+    this.deployingApplications.clear();
   }
 }

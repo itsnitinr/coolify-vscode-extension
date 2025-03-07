@@ -4,10 +4,12 @@ import { CoolifyWebViewProvider } from './providers/CoolifyWebViewProvider';
 import { isValidUrl, normalizeUrl } from './utils/urlValidator';
 import { CoolifyService } from './services/CoolifyService';
 
+let webviewProvider: CoolifyWebViewProvider | undefined;
+
 export function activate(context: vscode.ExtensionContext) {
   // Initialize managers and providers
   const configManager = new ConfigurationManager(context);
-  const webviewProvider = new CoolifyWebViewProvider(
+  webviewProvider = new CoolifyWebViewProvider(
     context.extensionUri,
     configManager
   );
@@ -28,7 +30,7 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // Update the webview if it exists
-    webviewProvider.updateView();
+    webviewProvider?.updateView();
   }
 
   // Initial configuration state
@@ -143,14 +145,59 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
 
+  const startDeploymentCommand = vscode.commands.registerCommand(
+    'coolify.startDeployment',
+    async () => {
+      try {
+        if (!webviewProvider) {
+          vscode.window.showErrorMessage('Coolify provider not initialized');
+          return;
+        }
+        const applications = await webviewProvider.getApplications();
+
+        if (!applications || applications.length === 0) {
+          vscode.window.showInformationMessage('No applications found');
+          return;
+        }
+
+        const selected = await vscode.window.showQuickPick(
+          applications.map((app) => ({
+            label: app.name,
+            description: app.status,
+            detail: `Status: ${app.status}`,
+            id: app.id,
+          })),
+          {
+            placeHolder: 'Select an application to deploy',
+            title: 'Start Deployment',
+          }
+        );
+
+        if (selected) {
+          await webviewProvider.deployApplication(selected.id);
+        }
+      } catch (error) {
+        vscode.window.showErrorMessage(
+          error instanceof Error ? error.message : 'Failed to start deployment'
+        );
+      }
+    }
+  );
+
   // Add to subscriptions
   context.subscriptions.push(
     webviewView,
     configureCommand,
     reconfigureCommand,
     refreshApplicationsCommand,
+    startDeploymentCommand,
     webviewProvider
   );
 }
 
-export function deactivate() {}
+export function deactivate() {
+  // Clean up any cached applications and deployment data
+  if (webviewProvider) {
+    webviewProvider.dispose();
+  }
+}
