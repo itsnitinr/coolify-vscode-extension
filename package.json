@@ -2,7 +2,7 @@
   "name": "vscode-coolify",
   "displayName": "Coolify Deployments",
   "description": "Track and deploy your Coolify applications right from Visual Studio Code",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": {
     "name": "Nitin Ranganath",
     "email": "nitinranganath@gmail.com",
