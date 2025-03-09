@@ -4,6 +4,8 @@ An extension that allows you to manage and trigger your Coolify application depl
 
 > **Note**: This is a community extension and is not officially associated with Coolify.
 
+![Screenshot](https://i.imgur.com/gHOfUpC.png)
+
 ## Features
 
 - View all your Coolify applications in VS Code
